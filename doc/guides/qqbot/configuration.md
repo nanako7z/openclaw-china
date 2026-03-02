@@ -121,6 +121,23 @@ openclaw config set channels.qqbot.replyFinalOnly false
 openclaw config set gateway.http.endpoints.chatCompletions.enabled true
 ```
 
+多账号（多个 QQ 机器人）示例：
+
+```bash
+# 指定默认账号（未显式指定 accountId 时使用）
+openclaw config set channels.qqbot.defaultAccount bot-a
+
+# 账号 bot-a
+openclaw config set channels.qqbot.accounts.bot-a.enabled true
+openclaw config set channels.qqbot.accounts.bot-a.appId your-app-id-a
+openclaw config set channels.qqbot.accounts.bot-a.clientSecret your-app-secret-a
+
+# 账号 bot-b
+openclaw config set channels.qqbot.accounts.bot-b.enabled true
+openclaw config set channels.qqbot.accounts.bot-b.appId your-app-id-b
+openclaw config set channels.qqbot.accounts.bot-b.clientSecret your-app-secret-b
+```
+
 ### 2. 配置项说明
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -135,6 +152,8 @@ openclaw config set gateway.http.endpoints.chatCompletions.enabled true
 | groupAllowFrom | string[] | [] | 群聊白名单 |
 | textChunkLimit | number | 1500 | 文本分块长度 |
 | replyFinalOnly | boolean | false | 是否仅发送最终回复 |
+| defaultAccount | string | "default" | 多账号模式的默认账号 ID |
+| accounts | object | - | 多账号配置容器，路径为 `channels.qqbot.accounts.<accountId>` |
 
 ---
 

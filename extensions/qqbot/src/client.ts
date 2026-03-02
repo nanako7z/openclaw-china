@@ -8,8 +8,12 @@ type TokenCache = {
   expiresAt: number;
 };
 
-let tokenCache: TokenCache | null = null;
-let tokenPromise: Promise<string> | null = null;
+type TokenRequestOptions = HttpRequestOptions & {
+  cacheKey?: string;
+};
+
+const tokenCache = new Map<string, TokenCache>();
+const tokenPromise = new Map<string, Promise<string>>();
 
 const MSG_SEQ_BASE = Math.floor(Date.now() / 1000) % 100000000;
 const msgSeqMap = new Map<string, number>();
@@ -28,24 +32,33 @@ function nextMsgSeq(messageId?: string): number {
   return MSG_SEQ_BASE + next;
 }
 
-export function clearTokenCache(): void {
-  tokenCache = null;
+export function clearTokenCache(cacheKey?: string): void {
+  if (cacheKey) {
+    tokenCache.delete(cacheKey);
+    tokenPromise.delete(cacheKey);
+    return;
+  }
+  tokenCache.clear();
+  tokenPromise.clear();
 }
 
 export async function getAccessToken(
   appId: string,
   clientSecret: string,
-  options?: HttpRequestOptions
+  options?: TokenRequestOptions
 ): Promise<string> {
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60 * 1000) {
-    return tokenCache.token;
+  const cacheKey = options?.cacheKey?.trim() || appId;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt - 5 * 60 * 1000) {
+    return cached.token;
   }
 
-  if (tokenPromise) {
-    return tokenPromise;
+  const pending = tokenPromise.get(cacheKey);
+  if (pending) {
+    return pending;
   }
 
-  tokenPromise = (async () => {
+  const nextPromise = (async () => {
     try {
       const data = await httpPost<{ access_token?: string; expires_in?: number }>(
         TOKEN_URL,
@@ -57,17 +70,19 @@ export async function getAccessToken(
         throw new Error("access_token missing from QQ response");
       }
 
-      tokenCache = {
+      const nextCache = {
         token: data.access_token,
         expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
       };
-      return tokenCache.token;
+      tokenCache.set(cacheKey, nextCache);
+      return nextCache.token;
     } finally {
-      tokenPromise = null;
+      tokenPromise.delete(cacheKey);
     }
   })();
 
-  return tokenPromise;
+  tokenPromise.set(cacheKey, nextPromise);
+  return nextPromise;
 }
 
 async function apiGet<T>(

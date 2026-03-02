@@ -1,12 +1,9 @@
-export type { QQBotConfig } from "./config.js";
-
-export interface ResolvedQQBotAccount {
-  accountId: string;
-  enabled: boolean;
-  configured: boolean;
-  appId?: string;
-  markdownSupport?: boolean;
-}
+export type {
+  QQBotConfig,
+  QQBotAccountConfig,
+  QQBotPluginConfig,
+  ResolvedQQBotAccount,
+} from "./config.js";
 
 export interface QQBotSendResult {
   channel: "qqbot";

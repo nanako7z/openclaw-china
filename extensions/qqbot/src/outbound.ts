@@ -2,7 +2,7 @@
  * QQ Bot 出站适配器
  */
 
-import { QQBotConfigSchema } from "./config.js";
+import { resolveQQBotAccount } from "./config.js";
 import {
   getAccessToken,
   sendC2CInputNotify,
@@ -11,13 +11,7 @@ import {
   sendChannelMessage,
 } from "./client.js";
 import { sendFileQQBot } from "./send.js";
-import type { QQBotConfig, QQBotSendResult } from "./types.js";
-
-export interface OutboundConfig {
-  channels?: {
-    qqbot?: QQBotConfig;
-  };
-}
+import type { QQBotPluginConfig, QQBotSendResult } from "./types.js";
 
 type TargetKind = "c2c" | "group" | "channel";
 
@@ -45,30 +39,47 @@ function parseTarget(to: string): { kind: TargetKind; id: string } {
   return { kind: "c2c", id: raw };
 }
 
+function resolveOutboundAccount(params: {
+  cfg: QQBotPluginConfig;
+  accountId?: string;
+}): { accountId: string; config: ReturnType<typeof resolveQQBotAccount>["config"]; error?: string } {
+  const account = resolveQQBotAccount({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  });
+  if (!account.configured) {
+    return {
+      accountId: account.accountId,
+      config: account.config,
+      error: "QQBot not configured (missing appId/clientSecret)",
+    };
+  }
+  return { accountId: account.accountId, config: account.config };
+}
+
 export const qqbotOutbound = {
   deliveryMode: "direct" as const,
   textChunkLimit: 1500,
   chunkerMode: "markdown" as const,
 
   sendText: async (params: {
-    cfg: OutboundConfig;
+    cfg: QQBotPluginConfig;
+    accountId?: string;
     to: string;
     text: string;
     replyToId?: string;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, text, replyToId } = params;
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
-    }
-    if (!qqCfg.appId || !qqCfg.clientSecret) {
-      return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
+    const { cfg, to, text, replyToId, accountId } = params;
+    const resolved = resolveOutboundAccount({ cfg, accountId });
+    if (resolved.error) {
+      return { channel: "qqbot", error: resolved.error };
     }
 
+    const qqCfg = resolved.config;
     const target = parseTarget(to);
-    const accessToken = await getAccessToken(qqCfg.appId, qqCfg.clientSecret);
+    const accessToken = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string, {
+      cacheKey: resolved.accountId,
+    });
     const markdown = qqCfg.markdownSupport ?? true;
 
     try {
@@ -107,35 +118,32 @@ export const qqbotOutbound = {
   },
 
   sendMedia: async (params: {
-    cfg: OutboundConfig;
+    cfg: QQBotPluginConfig;
+    accountId?: string;
     to: string;
     text?: string;
     mediaUrl?: string;
     replyToId?: string;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, mediaUrl, text, replyToId } = params;
+    const { cfg, to, mediaUrl, text, replyToId, accountId } = params;
     if (!mediaUrl) {
       const fallbackText = text?.trim() ?? "";
       if (!fallbackText) {
         return { channel: "qqbot", error: "mediaUrl is required for sendMedia" };
       }
-      return qqbotOutbound.sendText({ cfg, to, text: fallbackText, replyToId });
+      return qqbotOutbound.sendText({ cfg, accountId, to, text: fallbackText, replyToId });
     }
 
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
+    const resolved = resolveOutboundAccount({ cfg, accountId });
+    if (resolved.error) {
+      return { channel: "qqbot", error: resolved.error };
     }
-    if (!qqCfg.appId || !qqCfg.clientSecret) {
-      return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
-    }
+    const qqCfg = resolved.config;
 
     const target = parseTarget(to);
     if (target.kind === "channel") {
       const fallbackText = text?.trim() ? `${text}\n${mediaUrl}` : mediaUrl;
-      return qqbotOutbound.sendText({ cfg, to, text: fallbackText, replyToId });
+      return qqbotOutbound.sendText({ cfg, accountId, to, text: fallbackText, replyToId });
     }
 
     try {
@@ -144,6 +152,7 @@ export const qqbotOutbound = {
         target: { kind: target.kind, id: target.id },
         mediaUrl,
         messageId: replyToId,
+        accountId: resolved.accountId,
       });
       return { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
     } catch (err) {
@@ -153,21 +162,18 @@ export const qqbotOutbound = {
   },
 
   sendTyping: async (params: {
-    cfg: OutboundConfig;
+    cfg: QQBotPluginConfig;
+    accountId?: string;
     to: string;
     replyToId?: string;
     inputSecond?: number;
   }): Promise<QQBotSendResult> => {
-    const { cfg, to, replyToId, inputSecond } = params;
-    const rawCfg = cfg.channels?.qqbot;
-    const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-    const qqCfg = parsed?.success ? parsed.data : rawCfg;
-    if (!qqCfg) {
-      return { channel: "qqbot", error: "QQBot channel not configured" };
+    const { cfg, to, replyToId, inputSecond, accountId } = params;
+    const resolved = resolveOutboundAccount({ cfg, accountId });
+    if (resolved.error) {
+      return { channel: "qqbot", error: resolved.error };
     }
-    if (!qqCfg.appId || !qqCfg.clientSecret) {
-      return { channel: "qqbot", error: "QQBot not configured (missing appId/clientSecret)" };
-    }
+    const qqCfg = resolved.config;
 
     const target = parseTarget(to);
     if (target.kind !== "c2c") {
@@ -175,7 +181,9 @@ export const qqbotOutbound = {
     }
 
     try {
-      const accessToken = await getAccessToken(qqCfg.appId, qqCfg.clientSecret);
+      const accessToken = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string, {
+        cacheKey: resolved.accountId,
+      });
       await sendC2CInputNotify({
         accessToken,
         openid: target.id,

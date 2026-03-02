@@ -6,6 +6,7 @@
 import { qqbotPlugin, DEFAULT_ACCOUNT_ID } from "./src/channel.js";
 import { setQQBotRuntime, getQQBotRuntime } from "./src/runtime.js";
 import { registerChinaSetupCli, showChinaInstallHint } from "@openclaw-china/shared";
+import { QQBotConfigJsonSchema } from "./src/config.js";
 
 export interface MoltbotPluginApi {
   registerChannel: (opts: { plugin: unknown }) => void;
@@ -21,34 +22,7 @@ const plugin = {
   id: "qqbot",
   name: "QQ Bot",
   description: "QQ 开放平台机器人消息渠道插件",
-  configSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      enabled: { type: "boolean" },
-      appId: { type: "string" },
-      clientSecret: { type: "string" },
-      asr: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          enabled: { type: "boolean" },
-          appId: { type: "string" },
-          secretId: { type: "string" },
-          secretKey: { type: "string" }
-        }
-      },
-      markdownSupport: { type: "boolean" },
-      dmPolicy: { type: "string", enum: ["open", "pairing", "allowlist"] },
-      groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
-      requireMention: { type: "boolean" },
-      allowFrom: { type: "array", items: { type: "string" } },
-      groupAllowFrom: { type: "array", items: { type: "string" } },
-      historyLimit: { type: "integer", minimum: 0 },
-      textChunkLimit: { type: "integer", minimum: 1 },
-      replyFinalOnly: { type: "boolean" }
-    },
-  },
+  configSchema: QQBotConfigJsonSchema.schema,
 
   register(api: MoltbotPluginApi) {
     registerChinaSetupCli(api, { channels: ["qqbot"] });

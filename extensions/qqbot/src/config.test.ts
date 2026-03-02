@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { QQBotConfigSchema, resolveQQBotASRCredentials } from "./config.js";
+import {
+  QQBotConfigSchema,
+  listQQBotAccountIds,
+  resolveDefaultQQBotAccountId,
+  resolveQQBotASRCredentials,
+  resolveQQBotAccount,
+} from "./config.js";
 
 describe("QQBotConfigSchema", () => {
   it("applies media defaults", () => {
@@ -47,5 +53,41 @@ describe("QQBotConfigSchema", () => {
       secretId: "sid",
       secretKey: "skey",
     });
+  });
+
+  it("supports multi-account inheritance and override", () => {
+    const cfg = {
+      channels: {
+        qqbot: {
+          appId: "base-app",
+          clientSecret: "base-secret",
+          markdownSupport: true,
+          defaultAccount: "team-a",
+          accounts: {
+            "team-a": {
+              appId: "a-app",
+              clientSecret: "a-secret",
+              markdownSupport: false,
+            },
+            "team-b": {
+              enabled: false,
+            },
+          },
+        },
+      },
+    };
+
+    expect(listQQBotAccountIds(cfg)).toEqual(["team-a", "team-b"]);
+    expect(resolveDefaultQQBotAccountId(cfg)).toBe("team-a");
+
+    const accountA = resolveQQBotAccount({ cfg, accountId: "team-a" });
+    expect(accountA.configured).toBe(true);
+    expect(accountA.config.markdownSupport).toBe(false);
+    expect(accountA.config.appId).toBe("a-app");
+
+    const accountB = resolveQQBotAccount({ cfg, accountId: "team-b" });
+    expect(accountB.enabled).toBe(false);
+    expect(accountB.configured).toBe(true);
+    expect(accountB.config.appId).toBe("base-app");
   });
 });

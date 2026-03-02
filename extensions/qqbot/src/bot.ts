@@ -17,9 +17,10 @@ import {
   transcribeTencentFlash,
 } from "@openclaw-china/shared";
 import {
-  QQBotConfigSchema,
+  resolveQQBotAccountConfig,
   resolveQQBotASRCredentials,
-  type QQBotConfig,
+  type QQBotAccountConfig,
+  type QQBotPluginConfig,
 } from "./config.js";
 import { qqbotOutbound } from "./outbound.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -33,11 +34,7 @@ import * as fs from "node:fs";
 type DispatchParams = {
   eventType: string;
   eventData: unknown;
-  cfg?: {
-    channels?: {
-      qqbot?: QQBotConfig;
-    };
-  };
+  cfg?: QQBotPluginConfig;
   accountId: string;
   logger?: Logger;
 };
@@ -606,11 +603,15 @@ function buildInboundContext(params: {
 async function dispatchToAgent(params: {
   inbound: QQInboundMessage;
   cfg: unknown;
-  qqCfg: QQBotConfig;
+  qqCfg: QQBotAccountConfig;
   accountId: string;
   logger: Logger;
 }): Promise<void> {
   const { inbound, cfg, qqCfg, accountId, logger } = params;
+  const outboundCfg =
+    ((cfg as QQBotPluginConfig | undefined) ?? {
+      channels: { qqbot: qqCfg },
+    });
   const runtime = getQQBotRuntime();
   const routing = runtime.channel?.routing?.resolveAgentRoute;
   if (!routing) {
@@ -621,7 +622,8 @@ async function dispatchToAgent(params: {
   const target = resolveChatTarget(inbound);
   if (inbound.c2cOpenid) {
     const typing = await qqbotOutbound.sendTyping({
-      cfg: { channels: { qqbot: qqCfg } },
+      cfg: outboundCfg,
+      accountId,
       to: `user:${inbound.c2cOpenid}`,
       replyToId: inbound.messageId,
       inputSecond: 60,
@@ -665,7 +667,8 @@ async function dispatchToAgent(params: {
     !resolvedAttachmentResult.hasVoiceTranscript
   ) {
     const fallback = await qqbotOutbound.sendText({
-      cfg: { channels: { qqbot: qqCfg } },
+      cfg: outboundCfg,
+      accountId: route.accountId ?? accountId,
       to: target.to,
       text: buildVoiceASRFallbackReply(resolvedAttachmentResult.asrErrorMessage),
       replyToId: inbound.messageId,
@@ -844,7 +847,8 @@ async function dispatchToAgent(params: {
       const chunks = chunkText(converted);
       for (const chunk of chunks) {
         const result = await qqbotOutbound.sendText({
-          cfg: { channels: { qqbot: qqCfg } },
+          cfg: outboundCfg,
+          accountId: route.accountId ?? accountId,
           to: target.to,
           text: chunk,
           replyToId: inbound.messageId,
@@ -857,7 +861,8 @@ async function dispatchToAgent(params: {
 
     for (const mediaUrl of mediaQueue) {
       const result = await qqbotOutbound.sendMedia({
-        cfg: { channels: { qqbot: qqCfg } },
+        cfg: outboundCfg,
+        accountId: route.accountId ?? accountId,
         to: target.to,
         mediaUrl,
         replyToId: inbound.messageId,
@@ -866,7 +871,8 @@ async function dispatchToAgent(params: {
         logger.error(`sendMedia failed: ${result.error}`);
         const fallback = buildMediaFallbackText(mediaUrl, result.error);
         const fallbackResult = await qqbotOutbound.sendText({
-          cfg: { channels: { qqbot: qqCfg } },
+          cfg: outboundCfg,
+          accountId: route.accountId ?? accountId,
           to: target.to,
           text: fallback,
           replyToId: inbound.messageId,
@@ -935,7 +941,7 @@ async function dispatchToAgent(params: {
   dispatcherResult.markDispatchIdle?.();
 }
 
-function shouldHandleMessage(event: QQInboundMessage, qqCfg: QQBotConfig, logger: Logger): boolean {
+function shouldHandleMessage(event: QQInboundMessage, qqCfg: QQBotAccountConfig, logger: Logger): boolean {
   if (event.type === "direct") {
     const dmPolicy = qqCfg.dmPolicy ?? "open";
     const allowed = checkDmPolicy({
@@ -976,13 +982,10 @@ export async function handleQQBotDispatch(params: DispatchParams): Promise<void>
     return;
   }
 
-  const rawCfg = params.cfg?.channels?.qqbot;
-  const parsedCfg = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-  const qqCfg = parsedCfg?.success ? parsedCfg.data : rawCfg;
-  if (!qqCfg) {
-    logger.warn("qqbot config missing, ignoring inbound message");
-    return;
-  }
+  const qqCfg = resolveQQBotAccountConfig({
+    cfg: params.cfg ?? {},
+    accountId: params.accountId,
+  });
   if (!qqCfg.enabled) {
     logger.info("qqbot disabled, ignoring inbound message");
     return;

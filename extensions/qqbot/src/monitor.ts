@@ -5,16 +5,11 @@
 import WebSocket from "ws";
 import { createLogger, type Logger } from "./logger.js";
 import { handleQQBotDispatch } from "./bot.js";
-import { QQBotConfigSchema } from "./config.js";
+import { resolveQQBotAccount, type QQBotPluginConfig } from "./config.js";
 import { clearTokenCache, getAccessToken, getGatewayUrl } from "./client.js";
-import type { QQBotConfig } from "./types.js";
 
 export interface MonitorQQBotOpts {
-  config?: {
-    channels?: {
-      qqbot?: QQBotConfig;
-    };
-  };
+  config?: QQBotPluginConfig;
   runtime?: {
     log?: (msg: string) => void;
     error?: (msg: string) => void;
@@ -41,10 +36,13 @@ const DEFAULT_INTENTS =
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 20000, 30000];
 
-let activeSocket: WebSocket | null = null;
-let activeAccountId: string | null = null;
-let activePromise: Promise<void> | null = null;
-let activeStop: (() => void) | null = null;
+type MonitorState = {
+  socket: WebSocket | null;
+  promise: Promise<void>;
+  stop: () => void;
+};
+
+const monitorStates = new Map<string, MonitorState>();
 
 export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise<void> {
   const { config, runtime, abortSignal, accountId = "default" } = opts;
@@ -53,28 +51,24 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
     error: runtime?.error,
   });
 
-  if (activeSocket) {
-    if (activeAccountId && activeAccountId !== accountId) {
-      throw new Error(`QQBot already running for account ${activeAccountId}`);
-    }
-    if (activePromise) {
-      return activePromise;
-    }
-    throw new Error("QQBot monitor state invalid: active socket without promise");
+  const existing = monitorStates.get(accountId);
+  if (existing) {
+    return existing.promise;
   }
 
-  const rawCfg = config?.channels?.qqbot;
-  const parsed = rawCfg ? QQBotConfigSchema.safeParse(rawCfg) : null;
-  const qqCfg = parsed?.success ? parsed.data : rawCfg;
-  if (!qqCfg) {
-    throw new Error("QQBot configuration not found");
-  }
-
-  if (!qqCfg.appId || !qqCfg.clientSecret) {
+  const account = resolveQQBotAccount({
+    cfg: config ?? {},
+    accountId,
+  });
+  if (!account.configured) {
     throw new Error("QQBot not configured (missing appId or clientSecret)");
   }
+  const qqCfg = account.config;
 
-  activePromise = new Promise<void>((resolve, reject) => {
+  let socket: WebSocket | null = null;
+  let stopFn: (() => void) | null = null;
+
+  const promise = new Promise<void>((resolve, reject) => {
     let stopped = false;
     let reconnectAttempt = 0;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -96,16 +90,16 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
 
     const cleanupSocket = () => {
       clearTimers();
-      if (activeSocket) {
+      if (socket) {
         try {
-          if (activeSocket.readyState === WebSocket.OPEN) {
-            activeSocket.close();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.close();
           }
         } catch {
           // ignore
         }
       }
-      activeSocket = null;
+      socket = null;
     };
 
     const finish = (err?: unknown) => {
@@ -113,9 +107,7 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
       stopped = true;
       abortSignal?.removeEventListener("abort", onAbort);
       cleanupSocket();
-      activeAccountId = null;
-      activePromise = null;
-      activeStop = null;
+      monitorStates.delete(accountId);
       if (err) {
         reject(err);
       } else {
@@ -128,7 +120,7 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
       finish();
     };
 
-    activeStop = () => {
+    stopFn = () => {
       logger.info("stop requested");
       finish();
     };
@@ -151,14 +143,14 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
         clearInterval(heartbeatTimer);
       }
       heartbeatTimer = setInterval(() => {
-        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
         const payload = JSON.stringify({ op: 1, d: lastSeq });
-        activeSocket.send(payload);
+        socket.send(payload);
       }, intervalMs);
     };
 
     const sendIdentify = (token: string) => {
-      if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
       const payload = {
         op: 2,
         d: {
@@ -167,11 +159,11 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
           shard: [0, 1],
         },
       };
-      activeSocket.send(JSON.stringify(payload));
+      socket.send(JSON.stringify(payload));
     };
 
     const sendResume = (token: string, session: string, seq: number) => {
-      if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
       const payload = {
         op: 6,
         d: {
@@ -180,7 +172,7 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
           seq,
         },
       };
-      activeSocket.send(JSON.stringify(payload));
+      socket.send(JSON.stringify(payload));
     };
 
     const handleGatewayPayload = async (payload: GatewayPayload) => {
@@ -194,7 +186,9 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
           const interval = hello?.heartbeat_interval ?? 30000;
           startHeartbeat(interval);
 
-          const token = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string);
+          const token = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string, {
+            cacheKey: accountId,
+          });
           if (sessionId && typeof lastSeq === "number") {
             sendResume(token, sessionId, lastSeq);
           } else {
@@ -211,7 +205,7 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
         case 9:
           sessionId = null;
           lastSeq = null;
-          clearTokenCache();
+          clearTokenCache(accountId);
           cleanupSocket();
           scheduleReconnect("invalid session");
           return;
@@ -253,13 +247,14 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
 
       try {
         cleanupSocket();
-        const token = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string);
+        const token = await getAccessToken(qqCfg.appId as string, qqCfg.clientSecret as string, {
+          cacheKey: accountId,
+        });
         const gatewayUrl = await getGatewayUrl(token);
         logger.info(`connecting gateway: ${gatewayUrl}`);
 
         const ws = new WebSocket(gatewayUrl);
-        activeSocket = ws;
-        activeAccountId = accountId;
+        socket = ws;
 
         ws.on("open", () => {
           logger.info("gateway socket opened");
@@ -306,27 +301,30 @@ export async function monitorQQBotProvider(opts: MonitorQQBotOpts = {}): Promise
     void connect();
   });
 
-  return activePromise;
+  monitorStates.set(accountId, {
+    socket,
+    promise,
+    stop: () => {
+      stopFn?.();
+    },
+  });
+
+  return promise;
 }
 
-export function stopQQBotMonitor(): void {
-  if (activeStop) {
-    activeStop();
+export function stopQQBotMonitor(accountId?: string): void {
+  if (!accountId) {
+    for (const state of monitorStates.values()) {
+      state.stop();
+    }
     return;
   }
-  if (activeSocket) {
-    try {
-      activeSocket.close();
-    } catch {
-      // ignore
-    }
-    activeSocket = null;
-    activeAccountId = null;
-    activePromise = null;
-    activeStop = null;
-  }
+  monitorStates.get(accountId)?.stop();
 }
 
-export function isQQBotMonitorActive(): boolean {
-  return activeSocket !== null;
+export function isQQBotMonitorActive(accountId?: string): boolean {
+  if (accountId) {
+    return monitorStates.has(accountId);
+  }
+  return monitorStates.size > 0;
 }

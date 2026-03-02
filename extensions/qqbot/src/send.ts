@@ -10,7 +10,7 @@ import {
   uploadGroupMedia,
   MediaFileType,
 } from "./client.js";
-import type { QQBotConfig } from "./types.js";
+import type { QQBotAccountConfig } from "./types.js";
 import {
   detectMediaType,
   FileSizeLimitError,
@@ -27,10 +27,11 @@ export type QQBotFileTarget = {
 };
 
 export interface SendFileQQBotParams {
-  cfg: QQBotConfig;
+  cfg: QQBotAccountConfig;
   target: QQBotFileTarget;
   mediaUrl: string;
   messageId?: string;
+  accountId?: string;
 }
 
 const QQBOT_UNSUPPORTED_FILE_TYPE_MESSAGE =
@@ -83,7 +84,7 @@ async function uploadQQBotFile(params: {
 }
 
 export async function sendFileQQBot(params: SendFileQQBotParams): Promise<{ id: string; timestamp: number | string }> {
-  const { cfg, target, mediaUrl, messageId } = params;
+  const { cfg, target, mediaUrl, messageId, accountId } = params;
   if (!cfg.appId || !cfg.clientSecret) {
     throw new Error("QQBot not configured (missing appId/clientSecret)");
   }
@@ -99,7 +100,9 @@ export async function sendFileQQBot(params: SendFileQQBotParams): Promise<{ id: 
   const mediaTimeoutMs = cfg.mediaTimeoutMs ?? 30000;
   const maxSizeBytes = Math.floor(maxFileSizeMB * 1024 * 1024);
 
-  const accessToken = await getAccessToken(cfg.appId, cfg.clientSecret);
+  const accessToken = await getAccessToken(cfg.appId, cfg.clientSecret, {
+    cacheKey: accountId ?? cfg.appId,
+  });
   let fileInfo: string;
   try {
     if (sourceIsHttp) {
